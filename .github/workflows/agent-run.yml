@@ -219,7 +219,12 @@ jobs:
 
           if ! gh pr view "$BRANCH" --repo "$REPO" >/dev/null 2>&1; then
             summary=$(head -c 60000 .agent/last.md 2>/dev/null || echo "(no summary produced)")
-            gh pr create --repo "$REPO" --draft --head "$BRANCH" \
+            # NOT --draft. Draft only meant something paired with a review gate, and the
+            # reviewer now runs on `opened`, so the PR is reviewed either way. Leaving it as a
+            # draft just added a manual "ready for review" click before an already-reviewed PR
+            # could be merged. Marking it ready after creation would be worse — the caller also
+            # listens for ready_for_review, so that fires a second, duplicate review.
+            gh pr create --repo "$REPO" --head "$BRANCH" \
               --title "agent: ${{ steps.state.outputs.title }} (#$NUM)" \
               --body "$(printf 'Closes #%s\n\nExecutor: `%s` · round %s\n\n---\n\n%s\n' "$NUM" "$EXECUTOR" "$ROUND" "$summary")"
           fi
