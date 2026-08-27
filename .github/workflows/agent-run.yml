@@ -236,8 +236,14 @@ jobs:
           set -euo pipefail
           gh issue edit "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
             --remove-label agent:working --add-label agent:blocked || true
+          # Include the executor's own summary. When an agent correctly DECLINES a task — the
+          # case that matters most here — it produces no diff, so .agent/last.md is the only
+          # record of why. It is gitignored, so without this the reasoning is lost entirely and
+          # a principled refusal looks identical to a crash.
+          summary=$(head -c 8000 .agent/last.md 2>/dev/null || echo "_(the executor left no summary)_")
           gh issue comment "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
-            --body "Agent run did not produce a reviewable change. See [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." || true
+            --body "$(printf 'Agent run did not produce a reviewable change.\n\n**What the executor reported:**\n\n%s\n\n[run](%s/%s/actions/runs/%s)\n' \
+              "$summary" "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")" || true
 
       - name: Notify
         if: always() && inputs.ntfy_url != '' && steps.state.outputs.skip == 'false'
