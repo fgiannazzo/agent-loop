@@ -80,9 +80,12 @@ jobs:
 
             Be concrete. Cite file and line. Do not approve work you have not verified, and
             do not pad the review with praise. If the change is fine, say so briefly.
+          # The schema is single-quoted: claude_args is tokenised shell-style, which strips the
+          # inner double quotes and leaves {type:object,...} — invalid JSON, failing with
+          # "--json-schema is not valid JSON: Expected '}'".
           claude_args: >-
             --max-turns 30
-            --json-schema {"type":"object","required":["verdict","summary","blocking_issues"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes","comment"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"object","required":["file","issue"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}}}}}}
+            --json-schema '{"type":"object","required":["verdict","summary","blocking_issues"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes","comment"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"object","required":["file","issue"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}}}}}}'
 
       - name: Extract verdict
         id: verdict
