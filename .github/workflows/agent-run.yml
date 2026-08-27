@@ -61,8 +61,10 @@ jobs:
           MAX: ${{ inputs.max_round }}
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/issues/$NUM" > issue.json
-          labels=$(jq -r '.labels[].name' issue.json | paste -sd, -)
+          # $RUNNER_TEMP, not the workspace: actions/checkout cleans the workspace, which would
+          # delete this file between this step and "Prepare branch and task file".
+          gh api "repos/$REPO/issues/$NUM" > "$RUNNER_TEMP/issue.json"
+          labels=$(jq -r '.labels[].name' "$RUNNER_TEMP/issue.json" | paste -sd, -)
           echo "labels: $labels"
 
           case ",$labels," in
@@ -89,7 +91,7 @@ jobs:
             echo "executor=$executor"
             echo "round=$round"
             echo "branch=agent/issue-$NUM"
-            echo "title=$(jq -r .title issue.json)"
+            echo "title=$(jq -r .title "$RUNNER_TEMP/issue.json")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Mark blocked (round budget exhausted)
@@ -137,9 +139,9 @@ jobs:
           {
             echo "# Task — issue #$NUM"
             echo
-            jq -r '"## " + .title' issue.json
+            jq -r '"## " + .title' "$RUNNER_TEMP/issue.json"
             echo
-            jq -r '.body // ""' issue.json
+            jq -r '.body // ""' "$RUNNER_TEMP/issue.json"
             echo
             echo "## Discussion"
             gh api "repos/$REPO/issues/$NUM/comments" \
