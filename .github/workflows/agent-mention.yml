@@ -55,7 +55,10 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
-          allowed_bots: homelab-agent
+          # The App's bot login is namespaced by GitHub — it is fgiannazzo-homelab-agent,
+          # not the app name homelab-agent. Getting this wrong fails the run with
+          # "Workflow initiated by non-human actor", because agent PRs are authored by the App.
+          allowed_bots: fgiannazzo-homelab-agent
           use_sticky_comment: 'true'
           claude_args: '--max-turns 30'
 

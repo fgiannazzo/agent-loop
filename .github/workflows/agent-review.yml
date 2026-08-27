@@ -61,7 +61,10 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           # The PR author is the homelab-agent App, so its PRs must be allowed explicitly —
           # the action ignores bot-authored events by default.
-          allowed_bots: homelab-agent
+          # The App's bot login is namespaced by GitHub — it is fgiannazzo-homelab-agent,
+          # not the app name homelab-agent. Getting this wrong fails the run with
+          # "Workflow initiated by non-human actor", because agent PRs are authored by the App.
+          allowed_bots: fgiannazzo-homelab-agent
           use_sticky_comment: 'true'
           prompt: |
             Review pull request #${{ inputs.pr_number }} in ${{ github.repository }}.
