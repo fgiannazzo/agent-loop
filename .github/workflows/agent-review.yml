@@ -29,9 +29,12 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
 
+# contents: read only. The repo's default workflow permission is read, and a called workflow
+# cannot request more than its caller holds — asking for pull-requests: write here produced a
+# startup_failure before any step ran. Posting uses the App token passed as `github_token`,
+# not GITHUB_TOKEN, so the elevated scope was never needed.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   review:
