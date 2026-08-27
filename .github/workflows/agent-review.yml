@@ -38,7 +38,11 @@ jobs:
     steps:
       - name: Mint App token
         id: token
-        uses: actions/create-github-app-token@v2
+        # v3, not v2: the v2 tag predates the client-id input and fails with
+        # "[@octokit/auth-app] appId option is required". The action's default branch has had
+        # client-id for a while, which is what made v2 look fine on inspection — check the REF
+        # you actually pin, not the repo's main.
+        uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
           private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
