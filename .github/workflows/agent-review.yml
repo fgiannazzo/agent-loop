@@ -66,6 +66,8 @@ jobs:
           # "Workflow initiated by non-human actor", because agent PRs are authored by the App.
           allowed_bots: fgiannazzo-homelab-agent
           use_sticky_comment: 'true'
+          # TEMPORARY 2026-08-27: name the denied tools. REMOVE after the debug run.
+          show_full_output: 'true'
           prompt: |
             Review pull request #${{ inputs.pr_number }} in ${{ github.repository }}.
 
@@ -93,7 +95,7 @@ jobs:
           # the repo — the deterministic steps below do the labelling — so this is the floor,
           # not bypassPermissions.
           claude_args: >-
-            --max-turns 30
+            --max-turns 60
             --permission-mode acceptEdits
             --json-schema '{"type":"object","required":["verdict","summary","blocking_issues"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes","comment"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"object","required":["file","issue"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}}}}}}'
 
