@@ -177,6 +177,10 @@ jobs:
             Edit files in the working tree only. Do not run git or gh — commits and the pull
             request are handled by a later deterministic step. Do not modify anything under
             .github/. Write a short summary of what you changed to .agent/last.md.
+          # TEMPORARY 2026-08-27: the SDK hides the failure reason behind
+          # "full output hidden for security". Enabled to diagnose is_error:true with zero
+          # model usage. REMOVE once diagnosed — it prints all tool results to the log.
+          show_full_output: 'true'
           claude_args: '--max-turns 40'
 
       # ---- Everything below is deterministic. The agent cannot influence it. ----
