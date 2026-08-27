@@ -80,6 +80,11 @@ jobs:
 
             Be concrete. Cite file and line. Do not approve work you have not verified, and
             do not pad the review with praise. If the change is fine, say so briefly.
+
+            Finish by returning your verdict as structured output matching the provided JSON
+            schema: `verdict` (approve | request_changes | comment), a one-paragraph `summary`,
+            and `blocking_issues` — empty if there are none. Supplying the schema alone does not
+            make the session emit it; this instruction is what does.
           # The schema is single-quoted: claude_args is tokenised shell-style, which strips the
           # inner double quotes and leaves {type:object,...} — invalid JSON, failing with
           # "--json-schema is not valid JSON: Expected '}'".
