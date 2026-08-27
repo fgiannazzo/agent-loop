@@ -1,0 +1,112 @@
+# Reusable: review every agent PR with Claude and post a structured verdict.
+#
+# The verdict is machine-readable (--json-schema -> structured_output), so the caller can
+# gate on it rather than on prose. Claude reviews; it does not merge. Merging stays human.
+name: agent-review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      runs_on:
+        type: string
+        default: '["self-hosted","agent"]'
+      ntfy_url:
+        type: string
+        default: ''
+    secrets:
+      AGENT_APP_PRIVATE_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+    outputs:
+      verdict:
+        description: 'approve | request_changes | comment'
+        value: ${{ jobs.review.outputs.verdict }}
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 30
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - name: Mint App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Review
+        id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          # The PR author is the homelab-agent App, so its PRs must be allowed explicitly —
+          # the action ignores bot-authored events by default.
+          allowed_bots: homelab-agent
+          use_sticky_comment: 'true'
+          prompt: |
+            Review pull request #${{ inputs.pr_number }} in ${{ github.repository }}.
+
+            This PR was written by an automated agent from a GitHub issue, so weight your
+            review accordingly:
+              - Does it actually do what the linked issue asked? Scope creep and silent
+                narrowing both matter.
+              - Correctness first: real bugs, broken assumptions, unhandled failure paths.
+              - Does it follow the conventions already in this repository?
+              - Flag anything that touches credentials, deletes data, or changes behaviour
+                outside the issue's stated scope.
+
+            Be concrete. Cite file and line. Do not approve work you have not verified, and
+            do not pad the review with praise. If the change is fine, say so briefly.
+          claude_args: >-
+            --max-turns 30
+            --json-schema {"type":"object","required":["verdict","summary","blocking_issues"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes","comment"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"object","required":["file","issue"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}}}}}}
+
+      - name: Extract verdict
+        id: verdict
+        run: |
+          set -euo pipefail
+          raw='${{ steps.review.outputs.structured_output }}'
+          if [ -z "$raw" ]; then
+            echo "::warning::no structured output from reviewer — defaulting to comment"
+            echo "verdict=comment" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          verdict=$(printf '%s' "$raw" | jq -r '.verdict // "comment"')
+          count=$(printf '%s' "$raw" | jq -r '.blocking_issues | length')
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "::notice::verdict=$verdict blocking=$count"
+          printf '%s' "$raw" | jq -r '"### Review verdict: `" + .verdict + "`\n\n" + .summary' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Label the PR with the verdict
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          V: ${{ steps.verdict.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          gh pr edit "${{ inputs.pr_number }}" --repo "${{ github.repository }}" \
+            --remove-label "review:approve" --remove-label "review:request_changes" \
+            --remove-label "review:comment" 2>/dev/null || true
+          gh pr edit "${{ inputs.pr_number }}" --repo "${{ github.repository }}" \
+            --add-label "review:$V"
+
+      - name: Notify
+        if: always() && inputs.ntfy_url != ''
+        run: |
+          curl -fsS -H "Title: agent-review PR #${{ inputs.pr_number }}" \
+            -d "verdict: ${{ steps.verdict.outputs.verdict }}" \
+            "${{ inputs.ntfy_url }}" >/dev/null || true

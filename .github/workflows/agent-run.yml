@@ -1,0 +1,238 @@
+# Reusable: run an agent on an issue and open a draft PR.
+#
+# Design notes (ARCHITECTURE_DECISIONS.md 2026-08-15, loop/PLAN.md):
+#  - State lives in labels. agent:ready | agent:continue -> agent:working -> agent:review,
+#    or agent:blocked on failure. round:1..3 bounds retries.
+#  - Executor routing: label exec:claude selects Claude Code; absent selects Codex (default).
+#  - The executor EDITS FILES ONLY. Every git/gh side effect is a deterministic step below,
+#    using a GitHub App token that has no Workflows permission. .github/** is reverted after
+#    the executor runs so an agent can never rewrite its own guard rails.
+name: agent-run
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      runs_on:
+        description: 'JSON array of runner labels.'
+        type: string
+        default: '["self-hosted","agent"]'
+      max_round:
+        type: number
+        default: 3
+      ntfy_url:
+        description: 'Optional ntfy topic URL for notifications.'
+        type: string
+        default: ''
+    secrets:
+      AGENT_APP_PRIVATE_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 45
+    steps:
+      - name: Mint App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      # ---- Decide what to do, entirely from labels. No agent input yet. ----
+      - name: Resolve issue state
+        id: state
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          NUM: ${{ inputs.issue_number }}
+          MAX: ${{ inputs.max_round }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/issues/$NUM" > issue.json
+          labels=$(jq -r '.labels[].name' issue.json | paste -sd, -)
+          echo "labels: $labels"
+
+          case ",$labels," in
+            *,agent:ready,*|*,agent:continue,*) ;;
+            *) echo "::notice::no agent:ready / agent:continue label — nothing to do"
+               echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          # Executor routing: exec:claude wins, otherwise Codex.
+          if [[ ",$labels," == *,exec:claude,* ]]; then executor=claude; else executor=codex; fi
+
+          # Round bound. Absent round:N is treated as round 1.
+          round=$(printf '%s\n' "$labels" | tr ',' '\n' | sed -n 's/^round:\([0-9]\+\)$/\1/p' | head -1)
+          round=${round:-1}
+          if (( round > MAX )); then
+            echo "::error::round $round exceeds max $MAX — blocking"
+            echo "over_budget=true" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "skip=false"
+            echo "executor=$executor"
+            echo "round=$round"
+            echo "branch=agent/issue-$NUM"
+            echo "title=$(jq -r .title issue.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mark blocked (round budget exhausted)
+        if: steps.state.outputs.over_budget == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh issue edit "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --remove-label agent:ready --remove-label agent:continue --add-label agent:blocked
+          gh issue comment "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --body "Round budget (${{ inputs.max_round }}) exhausted. Labelled \`agent:blocked\` — needs a human."
+
+      - name: Claim the issue
+        if: steps.state.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh issue edit "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --remove-label agent:ready --remove-label agent:continue --add-label agent:working
+
+      - name: Checkout
+        if: steps.state.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Prepare branch and task file
+        if: steps.state.outputs.skip == 'false'
+        id: prep
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          NUM: ${{ inputs.issue_number }}
+          BRANCH: ${{ steps.state.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name  "homelab-agent[bot]"
+          git config user.email "homelab-agent[bot]@users.noreply.github.com"
+          git fetch origin "$BRANCH" 2>/dev/null && git checkout "$BRANCH" || git checkout -b "$BRANCH"
+
+          mkdir -p .agent
+          {
+            echo "# Task — issue #$NUM"
+            echo
+            jq -r '"## " + .title' issue.json
+            echo
+            jq -r '.body // ""' issue.json
+            echo
+            echo "## Discussion"
+            gh api "repos/$REPO/issues/$NUM/comments" \
+              --jq '.[] | "### @" + .user.login + "\n" + .body' || true
+            echo
+            echo "## Rules"
+            echo "- Edit files in the working tree only. Do not run git or gh; commits and the PR are handled for you."
+            echo "- Do not modify anything under .github/ — such changes are reverted automatically."
+            echo "- If the task is unclear or you cannot proceed, say so plainly in your final message and stop."
+          } > .agent/task.md
+          echo "task bytes: $(wc -c < .agent/task.md)"
+
+      # ---- The only step that runs model-authored work. ----
+      - name: Execute (Codex)
+        if: steps.state.outputs.skip == 'false' && steps.state.outputs.executor == 'codex'
+        run: |
+          set -euo pipefail
+          codex exec --json --ephemeral --sandbox workspace-write -C "$PWD" \
+            -o .agent/last.md - < .agent/task.md
+
+      - name: Execute (Claude)
+        if: steps.state.outputs.skip == 'false' && steps.state.outputs.executor == 'claude'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: homelab-agent
+          prompt: |
+            Read .agent/task.md in the repository root and carry out the task it describes.
+            Edit files in the working tree only. Do not run git or gh — commits and the pull
+            request are handled by a later deterministic step. Do not modify anything under
+            .github/. Write a short summary of what you changed to .agent/last.md.
+          claude_args: '--max-turns 40'
+
+      # ---- Everything below is deterministic. The agent cannot influence it. ----
+      - name: Revert any .github changes
+        if: steps.state.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- .github || [ -n "$(git ls-files --others --exclude-standard -- .github)" ]; then
+            echo "::warning::executor touched .github/ — reverting"
+            git checkout -- .github 2>/dev/null || true
+            git clean -fd -- .github 2>/dev/null || true
+          fi
+
+      - name: Commit, push, open draft PR
+        if: steps.state.outputs.skip == 'false'
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          NUM: ${{ inputs.issue_number }}
+          BRANCH: ${{ steps.state.outputs.branch }}
+          ROUND: ${{ steps.state.outputs.round }}
+          EXECUTOR: ${{ steps.state.outputs.executor }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::executor produced no changes"
+            exit 0
+          fi
+          git commit -m "agent: work on #$NUM (round $ROUND, $EXECUTOR)"
+          git push -u origin "$BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          if ! gh pr view "$BRANCH" --repo "$REPO" >/dev/null 2>&1; then
+            summary=$(head -c 60000 .agent/last.md 2>/dev/null || echo "(no summary produced)")
+            gh pr create --repo "$REPO" --draft --head "$BRANCH" \
+              --title "agent: ${{ steps.state.outputs.title }} (#$NUM)" \
+              --body "$(printf 'Closes #%s\n\nExecutor: `%s` · round %s\n\n---\n\n%s\n' "$NUM" "$EXECUTOR" "$ROUND" "$summary")"
+          fi
+
+      - name: Hand to review
+        if: steps.state.outputs.skip == 'false' && steps.pr.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh issue edit "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --remove-label agent:working --add-label agent:review
+
+      - name: Mark blocked on failure or no-op
+        if: always() && steps.state.outputs.skip == 'false' && (failure() || steps.pr.outputs.changed == 'false')
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh issue edit "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --remove-label agent:working --add-label agent:blocked || true
+          gh issue comment "${{ inputs.issue_number }}" --repo "${{ github.repository }}" \
+            --body "Agent run did not produce a reviewable change. See [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})." || true
+
+      - name: Notify
+        if: always() && inputs.ntfy_url != '' && steps.state.outputs.skip == 'false'
+        run: |
+          curl -fsS -H "Title: agent-run #${{ inputs.issue_number }}" \
+            -d "${{ job.status }} — ${{ steps.state.outputs.executor }} round ${{ steps.state.outputs.round }}" \
+            "${{ inputs.ntfy_url }}" >/dev/null || true

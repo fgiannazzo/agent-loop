@@ -1,0 +1,63 @@
+# Reusable: respond to an @claude mention on an issue or PR.
+#
+# This is the revision path. A human (or the reviewer) asks for a change in a comment and
+# Claude applies it on the existing branch. Kept separate from agent-run because the trigger,
+# the context and the blast radius are all different.
+name: agent-mention
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        type: string
+        default: '["self-hosted","agent"]'
+      trigger_phrase:
+        type: string
+        default: '@claude'
+      ntfy_url:
+        type: string
+        default: ''
+    secrets:
+      AGENT_APP_PRIVATE_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  mention:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 30
+    steps:
+      - name: Mint App token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          client-id: ${{ vars.AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      # Tag mode: the action reads the triggering comment itself and commits its own changes.
+      - name: Respond
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          trigger_phrase: ${{ inputs.trigger_phrase }}
+          allowed_bots: homelab-agent
+          use_sticky_comment: 'true'
+          claude_args: '--max-turns 30'
+
+      - name: Notify
+        if: always() && inputs.ntfy_url != ''
+        run: |
+          curl -fsS -H "Title: agent-mention" \
+            -d "${{ job.status }} on ${{ github.repository }}#${{ github.event.issue.number || github.event.pull_request.number }}" \
+            "${{ inputs.ntfy_url }}" >/dev/null || true
