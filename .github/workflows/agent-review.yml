@@ -66,8 +66,27 @@ jobs:
           # "Workflow initiated by non-human actor", because agent PRs are authored by the App.
           allowed_bots: fgiannazzo-homelab-agent
           use_sticky_comment: 'true'
-          # TEMPORARY 2026-08-27: name the denied tools. REMOVE after the debug run.
-          show_full_output: 'true'
+          # The reviewer works by shelling out to `gh` — an instrumented run showed it denied
+          # 13 times on "Fetch PR metadata", "Fetch PR full diff", "Fetch PR CI check status".
+          # acceptEdits grants file edits, not Bash, so it retried until it hit max_turns.
+          # Allow exactly those read-only calls and nothing else: this session reads
+          # AGENT-AUTHORED PR content, so blanket Bash (or bypassPermissions) would hand a
+          # prompt-injection surface arbitrary execution. Passed via `settings` rather than a
+          # CLI flag because claude_args is tokenised shell-style — the same thing that
+          # mangled the JSON schema.
+          settings: |
+            {
+              "permissions": {
+                "allow": [
+                  "Bash(gh pr view:*)",
+                  "Bash(gh pr diff:*)",
+                  "Bash(gh pr checks:*)",
+                  "Bash(gh pr list:*)",
+                  "Bash(gh api repos/:*)",
+                  "Read", "Grep", "Glob"
+                ]
+              }
+            }
           prompt: |
             Review pull request #${{ inputs.pr_number }} in ${{ github.repository }}.
 
