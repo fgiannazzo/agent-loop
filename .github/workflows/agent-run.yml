@@ -177,7 +177,12 @@ jobs:
             Edit files in the working tree only. Do not run git or gh — commits and the pull
             request are handled by a later deterministic step. Do not modify anything under
             .github/. Write a short summary of what you changed to .agent/last.md.
-          claude_args: '--max-turns 40'
+          # acceptEdits, because without it the executor is denied every file write and the run
+          # 'succeeds' having changed nothing — a real run burned 24 turns and $0.64 with
+          # permission_denials_count: 11. Deliberately NOT bypassPermissions: editing files is
+          # all this needs, and containment comes from elsewhere (App token has no Workflows
+          # permission, .github/** is reverted after the run, VM 220 is firewalled).
+          claude_args: '--max-turns 40 --permission-mode acceptEdits'
 
       # ---- Everything below is deterministic. The agent cannot influence it. ----
       - name: Revert any .github changes
