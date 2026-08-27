@@ -88,8 +88,13 @@ jobs:
           # The schema is single-quoted: claude_args is tokenised shell-style, which strips the
           # inner double quotes and leaves {type:object,...} — invalid JSON, failing with
           # "--json-schema is not valid JSON: Expected '}'".
+          # acceptEdits for the same reason as the executor: without it the session is denied
+          # its tools and 'succeeds' having done nothing. The reviewer is not meant to edit
+          # the repo — the deterministic steps below do the labelling — so this is the floor,
+          # not bypassPermissions.
           claude_args: >-
             --max-turns 30
+            --permission-mode acceptEdits
             --json-schema '{"type":"object","required":["verdict","summary","blocking_issues"],"properties":{"verdict":{"type":"string","enum":["approve","request_changes","comment"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"object","required":["file","issue"],"properties":{"file":{"type":"string"},"line":{"type":"integer"},"issue":{"type":"string"}}}}}}'
 
       - name: Extract verdict
